@@ -54,7 +54,7 @@ func readMovieData(filePath string, ratings map[string]struct {
 		if len(fields) >= 9 {
 			tconst := fields[0]
 			titleType := fields[1]
-			if rating, ok := ratings[tconst]; ok && titleType != "movie" { // Check if a rating exists for the movie and titleType is not "movie"
+			if rating, ok := ratings[tconst]; ok && titleType == "movie" { // Check if a rating exists for the movie and titleType is not "movie"
 				movie := Movie{
 					TitleId:       tconst,
 					Title:         fields[2],
