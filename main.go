@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,10 +37,22 @@ we then return the map
 
 */
 
+func readLines(file *os.File) ([]string, error) {
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lines, nil
+}
+
 func readMovieData(filePath string, ratings map[string]struct {
 	AverageRating float64
 	NumVotes      int
-}) (map[string]Movie, error) {
+}, numWorkers int) (map[string]Movie, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, err
@@ -47,28 +60,45 @@ func readMovieData(filePath string, ratings map[string]struct {
 	defer file.Close()
 
 	movies := make(map[string]Movie)
-	scanner := bufio.NewScanner(file)
-	scanner.Scan() // Skip the header line
-	for scanner.Scan() {
-		fields := strings.Split(scanner.Text(), "\t")
-		if len(fields) >= 9 {
-			tconst := fields[0]
-			titleType := fields[1]
-			if rating, ok := ratings[tconst]; ok && titleType == "movie" { // Check if a rating exists for the movie and titleType is not "movie"
-				movie := Movie{
-					TitleId:       tconst,
-					Title:         fields[2],
-					AverageRating: rating.AverageRating,
-					NumVotes:      rating.NumVotes,
-					Genres:        fields[8],
-				}
-				movies[tconst] = movie
-			}
-		}
+	lines, err := readLines(file)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, err
+	var wg sync.WaitGroup
+	movieChannel := make(chan Movie)
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(lines []string) {
+			defer wg.Done()
+			for _, line := range lines {
+				fields := strings.Split(line, "\t")
+				if len(fields) >= 9 {
+					tconst := fields[0]
+					titleType := fields[1]
+					if rating, ok := ratings[tconst]; ok && titleType == "movie" {
+						movie := Movie{
+							TitleId:       tconst,
+							Title:         fields[2],
+							AverageRating: rating.AverageRating,
+							NumVotes:      rating.NumVotes,
+							Genres:        fields[8],
+						}
+						movieChannel <- movie
+					}
+				}
+			}
+		}(lines[i*len(lines)/numWorkers : (i+1)*len(lines)/numWorkers])
+	}
+
+	go func() {
+		wg.Wait()
+		close(movieChannel)
+	}()
+
+	for movie := range movieChannel {
+		movies[movie.TitleId] = movie
 	}
 
 	return movies, nil
@@ -183,32 +213,9 @@ func binarySearchNon(movies []Movie, title string) (Movie, bool) {
 	return Movie{}, false
 }
 
-// concurrent binary serach using goroutines. Allows us to create concurrent workers to look through smaller sections of the map. then send the result through a channel.
-func binarySearch(movies []Movie, title string, wg *sync.WaitGroup, resultChan chan Movie) {
-	defer wg.Done()
-
-	low, high := 0, len(movies)-1
-
-	for low <= high {
-		mid := (low + high) / 2
-		if strings.EqualFold(movies[mid].Title, title) {
-			resultChan <- movies[mid]
-			return
-		} else if strings.Compare(movies[mid].Title, title) < 0 {
-			low = mid + 1
-		} else {
-			high = mid - 1
-		}
-	}
-
-	resultChan <- Movie{} // If not found, send an empty Movie
-}
-
 func main() {
 	// Read ratings data first
 	fmt.Println("Stuff is happening starting time now.")
-
-	startTotalTime := time.Now()
 	startTimeRank := time.Now()
 
 	ratings, err := readRatingData("title.ratings.tsv")
@@ -221,11 +228,18 @@ func main() {
 
 	// Then read movie data passing ratings map
 	startTimeMovie := time.Now()
-	movieData, err := readMovieData("filtered_output_file.tsv", ratings)
+	var memStatsStart runtime.MemStats
+	runtime.ReadMemStats((&memStatsStart))
+	fmt.Printf("Starting memory usage: %.2f MiB\n", float64(memStatsStart.Alloc)/1024/1024)
+	movieData, err := readMovieData("filtered_output_file.tsv", ratings, 16)
 	if err != nil {
 		fmt.Println("Error reading movie data:", err)
 		return
 	}
+	var memStatsEnd runtime.MemStats
+	runtime.ReadMemStats(&memStatsEnd)
+	fmt.Printf("Final memory usage: %.2f MiB\n", float64(memStatsEnd.Alloc)/1024/1024)
+	fmt.Printf("Memory used by function: %.2f MiB\n", float64(memStatsEnd.Alloc-memStatsStart.Alloc)/1024/1024)
 	elapsedTimeMovie := time.Since(startTimeMovie)
 	fmt.Printf("Time to map movies: %s\n", elapsedTimeMovie)
 
@@ -240,65 +254,38 @@ func main() {
 	elapsedTimeSort := time.Since(startTimeSort)
 	fmt.Printf("Time to sort movies using heap sort: %s\n", elapsedTimeSort)
 
-	titleToSearch := "Rick and Morty"
-	numWorkers := 4 // creating 4 workers
+	var menu string
 
-	//creating a waiting group, and making a results channel.
-	var wg sync.WaitGroup
-	resultChan := make(chan Movie, numWorkers)
+	for {
+		fmt.Println("search - search for a movie by title")
+		fmt.Println("quit or q - quit")
+		fmt.Print("Enter your choice: ")
+		fmt.Scanln(&menu)
 
-	// Searching
-	startTimeSearch := time.Now()
-	chunkSize := len(movieSlice) / numWorkers
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
+		switch strings.ToLower(menu) {
+		case "search":
+			reader := bufio.NewReader(os.Stdin)
+			fmt.Print("Please enter the movie you'd like to search exactly as it was published: ")
+			titleToSearch, _ := reader.ReadString('\n')
+			titleToSearch = strings.TrimSpace(titleToSearch)
+			temp := time.Now()
+			foundMovie, found := binarySearchNon(movieSlice, titleToSearch)
+			tempTime := time.Since(temp)
 
-		start := i * chunkSize
-		end := start + chunkSize
-		if i == numWorkers-1 {
-			end = len(movieSlice)
-		}
+			if found {
+				fmt.Printf("Movie found: Title: %s, Rating: %f, NumVotes: %d, Genres: %s\n",
+					foundMovie.Title, foundMovie.AverageRating, foundMovie.NumVotes, foundMovie.Genres)
+			} else {
+				fmt.Println("Movie not found.")
+			}
 
-		go binarySearch(movieSlice[start:end], titleToSearch, &wg, resultChan)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultChan)
-	}()
-
-	// results
-	var foundMovie Movie
-	for result := range resultChan {
-		if result.TitleId != "" { // Check if the result is not an empty Movie
-			foundMovie = result
-			break
+			fmt.Printf("Time without concurrency %s\n", tempTime)
+		case "q", "quit":
+			fmt.Println("Quiting...")
+			return
+		default:
+			fmt.Println("Invalid choice, please try again.")
 		}
 	}
-	elapsedTimeSearch := time.Since(startTimeSearch)
-	fmt.Printf("Time to search for your movie/tv show: %s\n", elapsedTimeSearch)
-
-	temp := time.Now()
-	foundMovie, found := binarySearchNon(movieSlice, titleToSearch)
-	tempTime := time.Since(temp)
-	fmt.Printf("Time without concurrency %s\n", tempTime)
-
-	// Display result
-	if found {
-		fmt.Printf("Movie found: Title: %s, Rating: %f, NumVotes: %d, Genres: %s\n",
-			foundMovie.Title, foundMovie.AverageRating, foundMovie.NumVotes, foundMovie.Genres)
-	} else {
-		fmt.Println("Movie not found.")
-	}
-	// display result
-	if foundMovie.TitleId != "" {
-		fmt.Printf("Movie/TV show found: Title: %s, Rating: %f, NumVotes: %d, Genres: %s\n",
-			foundMovie.Title, foundMovie.AverageRating, foundMovie.NumVotes, foundMovie.Genres)
-	} else {
-		fmt.Println("Movie/TV show not found.")
-	}
-
-	endTotalTime := time.Since(startTotalTime)
-	fmt.Printf("Total time elapsed: %s\n", endTotalTime)
 
 }
