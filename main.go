@@ -8,8 +8,8 @@ imports to be used
 import (
 	"bufio"
 	"fmt"
+	"math/rand"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -163,39 +163,6 @@ func parseInt(s string) int {
 	return num
 }
 
-// standard heap sort implementation. Compares the movie titles and sorts based off that.
-func heapify(movies []Movie, n int, i int) {
-	largest := i
-	left := 2*i + 1
-	right := 2*i + 2
-
-	if left < n && movies[left].Title > movies[largest].Title {
-		largest = left
-	}
-
-	if right < n && movies[right].Title > movies[largest].Title {
-		largest = right
-	}
-
-	if largest != i {
-		movies[i], movies[largest] = movies[largest], movies[i]
-		heapify(movies, n, largest)
-	}
-}
-
-func heapSort(movies []Movie) {
-	n := len(movies)
-
-	for i := n/2 - 1; i >= 0; i-- {
-		heapify(movies, n, i)
-	}
-
-	for i := n - 1; i >= 0; i-- {
-		movies[0], movies[i] = movies[i], movies[0]
-		heapify(movies, i, 0)
-	}
-}
-
 func binarySearchNon(movies []Movie, title string) (Movie, bool) {
 	low, high := 0, len(movies)-1
 
@@ -213,6 +180,29 @@ func binarySearchNon(movies []Movie, title string) (Movie, bool) {
 	return Movie{}, false
 }
 
+func quicksort(movies []Movie) {
+	if len(movies) < 2 {
+		return
+	}
+
+	left, right := 0, len(movies)-1
+	pivot := rand.Int() % len(movies)
+
+	movies[pivot], movies[right] = movies[right], movies[pivot]
+
+	for i := range movies {
+		if movies[i].Title < movies[right].Title {
+			movies[left], movies[i] = movies[i], movies[left]
+			left++
+		}
+	}
+
+	movies[left], movies[right] = movies[right], movies[left]
+
+	quicksort(movies[:left])
+	quicksort(movies[left+1:])
+}
+
 func main() {
 	// Read ratings data first
 	fmt.Println("Stuff is happening starting time now.")
@@ -228,18 +218,11 @@ func main() {
 
 	// Then read movie data passing ratings map
 	startTimeMovie := time.Now()
-	var memStatsStart runtime.MemStats
-	runtime.ReadMemStats((&memStatsStart))
-	fmt.Printf("Starting memory usage: %.2f MiB\n", float64(memStatsStart.Alloc)/1024/1024)
-	movieData, err := readMovieData("filtered_output_file.tsv", ratings, 16)
+	movieData, err := readMovieData("title.basics.tsv", ratings, 16)
 	if err != nil {
 		fmt.Println("Error reading movie data:", err)
 		return
 	}
-	var memStatsEnd runtime.MemStats
-	runtime.ReadMemStats(&memStatsEnd)
-	fmt.Printf("Final memory usage: %.2f MiB\n", float64(memStatsEnd.Alloc)/1024/1024)
-	fmt.Printf("Memory used by function: %.2f MiB\n", float64(memStatsEnd.Alloc-memStatsStart.Alloc)/1024/1024)
 	elapsedTimeMovie := time.Since(startTimeMovie)
 	fmt.Printf("Time to map movies: %s\n", elapsedTimeMovie)
 
@@ -250,9 +233,9 @@ func main() {
 
 	// Sorting
 	startTimeSort := time.Now()
-	heapSort(movieSlice)
+	quicksort(movieSlice)
 	elapsedTimeSort := time.Since(startTimeSort)
-	fmt.Printf("Time to sort movies using heap sort: %s\n", elapsedTimeSort)
+	fmt.Printf("Time to sort movies using quick sort: %s\n", elapsedTimeSort)
 
 	var menu string
 
